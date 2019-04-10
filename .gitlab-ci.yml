@@ -1,0 +1,70 @@
+image:
+  name: dmitrijsf/ci-docker:latest
+  entrypoint:
+    - '/usr/bin/env'
+    - 'PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
+
+variables:
+  PACKER_DIR: packer
+  TF_DIR: terraform
+  PLAN: plan.tfplan
+  S3_BUCKET: terraform-state-gitlabci
+
+cache:
+  paths:
+    - .terraform
+
+before_script:
+  - packer --version
+  - terraform --version
+  - cd $TF_DIR && terraform init -input=false
+
+stages:
+  - validate
+  - build
+  - plan
+  - deploy
+
+packer validate:
+  stage: validate
+  script:
+    - cd ../$PACKER_DIR && find . -maxdepth 1 -name '*.json' -print0 | xargs -t0n1 packer validate
+
+terraform validate:
+  stage: validate
+  script:
+    - cd ../$TF_DIR && terraform validate -var-file=aws-demo.tfvars
+
+build-ami:
+  stage: build
+  environment:
+    name: production
+  script:
+    - cd ../$PACKER_DIR && find . -maxdepth 1 -name '*.json' -print0 | xargs -t0n1 packer build
+  when: manual
+  only:
+    - master
+
+plan:
+  stage: plan
+  script:
+    - cd ../$TF_DIR && terraform plan -var-file=aws-demo.tfvars -out=$PLAN
+    - cd ../$TF_DIR && aws s3 cp $PLAN s3://$S3_BUCKET/$PLAN
+  artifacts:
+    name: plan
+    paths:
+      - $PLAN
+
+deploy:
+  stage: deploy
+  environment:
+    name: production
+  script:
+    - cd ../$TF_DIR && aws s3 cp s3://$S3_BUCKET/$PLAN $PLAN
+    - cd ../$TF_DIR && terraform apply -input=false $PLAN
+  dependencies:
+    - plan
+    - build-ami
+  when: manual
+  only:
+    - master
